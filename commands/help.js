@@ -4,9 +4,7 @@ const {
   const config = require(`${process.cwd()}/botconfig/config.json`);
   var ee = require(`${process.cwd()}/botconfig/embed.json`);
   const emoji = require(`${process.cwd()}/botconfig/emojis.json`);
-  const {
-    duration, handlemsg
-  } = require(`${process.cwd()}/handlers/functions`)
+ 
   module.exports = {
     name: "help",
     category: "🔰 Info",
