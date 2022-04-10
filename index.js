@@ -1,3 +1,13 @@
+const mongoose = require('./database/mongoose')
+const config = require("./botconfig/config.json")
+const emojis = require("./botconfig/emojis.json")
+const Events = require("events");
+const OS = require('os');
+const fs = require("fs");
+const enmap = require("enmap");
+const colors = require("colors");
+require('dotenv').config();
+
 const Discord = require('discord.js');
 const client = new Discord.Client({
 	fetchAllMembers: false,
@@ -30,15 +40,6 @@ const client = new Discord.Client({
 		status: "online"
 	  }
   });
-const mongoose = require('./database/mongoose')
-const config = require("./botconfig/config.json")
-const emojis = require("./botconfig/emojis.json")
-const Events = require("events");
-const OS = require('os');
-const fs = require("fs");
-const enmap = require("enmap");
-const colors = require("colors");
-require('dotenv').config();
 
 client.prefix = 'w!';
 client.commands = new Discord.Collection();
