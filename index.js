@@ -41,9 +41,6 @@ const client = new Discord.Client({
 	  }
   });
 
-client.prefix = 'w!';
-client.commands = new Discord.Collection();
-
 client.la = {}
 var langs = fs.readdirSync("./languages")
 for (const lang of langs.filter(file => file.endsWith(".json"))) {
