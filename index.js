@@ -44,5 +44,23 @@ const client = new Discord.Client({
 client.prefix = 'w!';
 client.commands = new Discord.Collection();
 
+client.la = {}
+var langs = fs.readdirSync("./languages")
+for (const lang of langs.filter(file => file.endsWith(".json"))) {
+  client.la[`${lang.split(".json").join("")}`] = require(`./languages/${lang}`)
+}
+Object.freeze(client.la)
+//function "handlemsg(txt, options? = {})" is in /handlers/functions
+
+function requirehandlers() {
+	["extraevents", "clientvariables", "command", "events", "erelahandler", "slashCommands"].forEach(handler => {
+	  try { require(`./handlers/${handler}`)(client); } catch (e) { console.log(e.stack ? String(e.stack).grey : String(e).grey) }
+	});
+	
+	["aichat"].forEach(handler => {
+		try { require(`./handlers/${handler}`)(client); } catch (e) { console.log(e.stack ? String(e.stack).grey : String(e).grey) }
+	  });
+  } requirehandlers();
+
 mongoose.init();
 client.login(process.env.TOKEN);
