@@ -17,6 +17,10 @@
     "mongoose": "^5.11.14",
     "enmap": "^5.8.7",
     "colors": "^1.4.0",
-    "moment": "2.29.2"
+    "moment": "2.29.2",
+    "erela.js": "^2.3.3",
+    "erela.js-deezer": "^1.0.7",
+    "erela.js-facebook": "^1.0.4",
+    "erela.js-spotify": "^1.2.0"
   }
 }
