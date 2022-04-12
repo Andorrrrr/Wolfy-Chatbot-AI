@@ -1,7 +1,13 @@
 const { readdirSync, lstatSync } = require("fs");
 const { SlashCommandBuilder } = require('@discordjs/builders');
 const config = require(`${process.cwd()}/botconfig/config.json`);
-
+const dirSetup = [
+    {
+            "Folder": "Info",
+            "CmdName": "info",
+            "CmdDescription": "Get Informations!"
+    }
+];
 module.exports = (client) => {
     try {
 		// client.slashCommands.set("commandname") //Each Command Data
