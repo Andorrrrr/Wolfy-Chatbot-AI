@@ -22,6 +22,7 @@
     "erela.js-deezer": "^1.0.7",
     "erela.js-facebook": "^1.0.4",
     "erela.js-spotify": "^1.2.0",
+    "nekos.life": "^2.0.9",
     "rss-parser": "^3.12.0"
   }
 }
