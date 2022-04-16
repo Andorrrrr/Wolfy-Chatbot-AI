@@ -5,6 +5,7 @@ var emoji = require(`${process.cwd()}/botconfig/emojis.json`);
 var {
     MessageEmbed, MessageAttachment, User, Permissions
 } = require(`discord.js`);
+const { databasing, dbEnsure } = require(`./functions`)
 const fetch = require("node-fetch")
 module.exports = client => {
     // CMD

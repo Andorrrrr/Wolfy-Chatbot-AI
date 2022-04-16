@@ -12,9 +12,12 @@ const radios = require("../botconfig/radiostations.json");
 const ms = require("ms")
 const moment = require("moment")
 const fs = require('fs')
-
+const _ = require("lodash");
 
 module.exports = {
+  dbRemove,
+  dbKeys,
+  CheckGuild,
   create_transcript_buffer,
   handlemsg,
   ensure_economy_user,
@@ -52,20 +55,54 @@ module.exports = {
   parseMilliseconds,
   isEqual,
   check_if_dj,
-  dbEnsure
+  dbEnsure,
+  clearDBData,
+  getDisabledComponents
+};
+//usage: await dbRemove(QuickMongoDB, "key", "a"); 
+//with callbackfunction: await dbRemove(QuickMongoDB, "key", d => d.data == "a"); 
+async function dbRemove(db, key, filter) {
+  return new Promise(async (res) => {
+    try {
+      const Data = await db.get(key);
+      if (Data == null) {
+        return null;
+      }
+      if (!Array.isArray(Data)) return res(null)
+      // allow db.remove(key, d); and: db.remove(key, data => data.foo == "bar") 
+      const FindFunction = _.isFunction(filter) ? filter : (v) => filter === v;
+      const DataIndex = Data.findIndex(FindFunction);
+      // If index found, remove it
+      if (DataIndex > -1) {
+        Data.splice(DataIndex, 1);
+      }
+      let newData = await db.set(key, Data);
+      return res(newData);
+    }catch{
+      res(null);
+    }
+  })
 }
-function check_if_dj(client, member, song) {
+async function check_if_dj(client, member, song) {
   //if no message added return
   if(!client) return false;
-  var roleid = client.settings.get(member.guild.id, `djroles`)
-  if (String(roleid) == "") return false;
+  var roleid = await client.settings.get(`${member.guild.id}.djroles`)
+  if (!roleid || roleid.length == 0 || String(roleid) == "") return false;
   var isdj = false;
+  var spliced = false
   for(const djRole of roleid){
     if (!member.guild.roles.cache.get(djRole)) {
-      client.settings.remove(member.guild.id, djRole, `djroles`)
+      const index = roleid.indexOf(djRole)
+      if(index > -1) {
+        spliced = true;
+        roleid.splice(index, 1)
+      }
       continue;
     }
     if (member.roles.cache.has(djRole)) isdj = true;
+    if(spliced) {
+      await client.settings.set(`${member.guild.id}.djroles`, roleid)
+    }
   }
   if (!isdj && !member.permissions.has("ADMINISTRATOR") && song?.requester?.id != member.id)
       return roleid.map(i=>`<@&${i}>`).join(", ");
@@ -153,15 +190,13 @@ function GetUser(message, arg){
     if(!args || args == null || args == undefined) args = message.content.trim().split(/ +/).slice(1);
     let user = message.mentions.users.first();
     if(!user && args[0] && args[0].length == 18) {
-      user = await client.users.fetch(args[0]).catch((e)=>{
-        return reject(errormessage);
-      })
+      user = await client.getUser(args[0]).catch(() => {});
       if(!user) return reject(errormessage)
       return resolve(user);
     }
     /**
      * @INFO
-     * Bot Coded by Tomato#6966 | https://discord.gg/milrato
+     * Bot Coded by Tomato#6966 | https://discord.gg/dcdev
      * @INFO
      * Work for Milrato Development | https://milrato.eu
      * @INFO
@@ -179,8 +214,8 @@ function GetUser(message, arg){
         user = message.guild.members.cache.find(me => String(me.displayName + "#" + me.user.discriminator).toLowerCase() == user)
         if(!user || user == null || !user.id) return reject(errormessage)
       }
-      user = await client.users.fetch(user.user.id).catch(() => {})
-      if(!user) return reject(errormessage)
+      
+      user = await client.getUser(user.user.i).catch(() => {});
       return resolve(user);
     }
     else {
@@ -215,6 +250,7 @@ function GetRole(message, arg){
     }
   })
 }
+
 function GetGlobalUser(message, arg){
   var errormessage = "<:no:833101993668771842> I failed finding that User...";
   return new Promise(async (resolve, reject) => {
@@ -223,7 +259,7 @@ function GetGlobalUser(message, arg){
     if(!args || args == null || args == undefined) args = message.content.trim().split(/ +/).slice(1);
     let user = message.mentions.users.first();
     if(!user && args[0] && args[0].length == 18) {
-      user = await client.users.fetch(args[0]).catch(() => {})
+      user = await client.getUser(args[0]).catch(() => {})
       if(!user) return reject(errormessage)
       return resolve(user);
     }
@@ -241,7 +277,7 @@ function GetGlobalUser(message, arg){
         user = allmembers.find(me => String(me.displayName + "#" + me.user.discriminator).toLowerCase() == user)
         if(!user || user == null || !user.id) return reject(errormessage)
       }
-      user = await client.users.fetch(user.user.id).catch(() => {})
+      user = await client.getUser(user.user.i).catch(() => {});
       if(!user) return reject(errormessage)
       return resolve(user);
     }
@@ -265,10 +301,13 @@ async function edit_Roster_msg(client, guild, the_roster_db, pre) {
     //fetch all guild members
     await guild.members.fetch().catch(() => {});
     //get the roster data
-    var data = the_roster_db?.get(guild.id, pre)
+    let es = await client.settings.get(guild.id+".embed")
+    let ls = await client.settings.get(guild.id+".language")
+    let guildData = await the_roster_db.get(guild.id);
+    if(!guildData) return
+    var data = guildData[pre]
+    if(!data) return
     //get the EMBED SETTINGS
-    let es = client.settings.get(guild.id, "embed")
-    let ls = client.settings.get(guild.id, "language")
     //if the rosterchannel is not valid, then send error + return
     if (data.rosterchannel == "notvalid")
       return //console.log("Roster Channel not valid | :: | " + data.rosterchannel);
@@ -317,21 +356,21 @@ async function edit_Roster_msg(client, guild, the_roster_db, pre) {
       //try to send the roster with the right style..
       if (data.rosterstyle == "1") {
         //define the memberarray
-        let memberarray = role.members.map(member => `${the_roster_db?.get(guild.id, pre+".rosteremoji")} <@${member.user.id}> | \`${member.user.tag}\``)
+        let memberarray = role.members.map(member => `${guildData[pre].rosteremoji} <@${member.user.id}> | \`${member.user.tag}\``)
         //loopthrough the array for 20 members / page
         for (let i = 0; i < memberarray.length; i += 20) {
           var thearray = memberarray;
           if (rosterembed.length > 5000) break;
-          if (!the_roster_db?.get(guild.id, pre+".showallroles") || memberarray.length < 20)
+          if (!guildData[pre].showallroles || memberarray.length < 20)
             try { 
-              rosterembed.addField(`**__${role.name.toUpperCase()} [${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length}]__**`, role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length == 0 ? "> No one has this Role" : thearray.slice(i, i + 20).join("\n").substring(0, leftnum <= 1024 ? leftnum : 1024) + `${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length - 20 > 0 ? `\n${the_roster_db?.get(guild.id, pre+".rosteremoji")} ***\`${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length - 20}\` other Members have this Role ...***`: ""}`.substring(0, 1024), the_roster_db?.get(guild.id, pre+".inline"))
+              rosterembed.addField(`**__${role.name.toUpperCase()} [${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length}]__**`, role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length == 0 ? "> No one has this Role" : thearray.slice(i, i + 20).join("\n").substring(0, leftnum <= 1024 ? leftnum : 1024) + `${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length - 20 > 0 ? `\n${guildData[pre].rosteremoji} ***\`${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length - 20}\` other Members have this Role ...***`: ""}`.substring(0, 1024), guildData[pre].inline)
               break;
             } catch (e) {
               console.error(e)
             }
           else
             try {
-              rosterembed.addField(i < 20 ? `**__${role.name.toUpperCase()} [${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length}]__**` : `\u200b`, role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length == 0 ? "> No one has this Role" : thearray.slice(i, i + 20).join("\n").substring(0, leftnum <= 1024 ? leftnum : 1024), the_roster_db?.get(guild.id, pre+".inline"))
+              rosterembed.addField(i < 20 ? `**__${role.name.toUpperCase()} [${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length}]__**` : `\u200b`, role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length == 0 ? "> No one has this Role" : thearray.slice(i, i + 20).join("\n").substring(0, leftnum <= 1024 ? leftnum : 1024), guildData[pre].inline)
             } catch (e) {
               console.error(e)
             }
@@ -339,28 +378,28 @@ async function edit_Roster_msg(client, guild, the_roster_db, pre) {
         //if there are no members who have this role, do this
         if(memberarray.length === 0){
           try {
-            rosterembed.addField(`**__${role.name.toUpperCase()} [0]__**`, "> ***No one has this Role***".substring(0, 1024), the_roster_db?.get(guild.id, pre+".inline"))
+            rosterembed.addField(`**__${role.name.toUpperCase()} [0]__**`, "> ***No one has this Role***".substring(0, 1024), guildData[pre].inline)
           } catch (e) {
             console.error(e)
           }
         }
       } else if (data.rosterstyle == "2") {
         //define the memberarray
-        let memberarray = role.members.map(member => `${the_roster_db?.get(guild.id, pre+".rosteremoji")} <@${member.user.id}>`)
+        let memberarray = role.members.map(member => `${guildData[pre].rosteremoji} <@${member.user.id}>`)
         //loopthrough the array for 20 members / page
         for (let i = 0; i < memberarray.length; i += 20) {
           var thearray = memberarray;
           if (rosterembed.length > 5000) break;
-          if (!the_roster_db?.get(guild.id, pre+".showallroles") || memberarray.length < 20)
+          if (!guildData[pre].showallroles || memberarray.length < 20)
             try {
-              rosterembed.addField(`**__${role.name.toUpperCase()} [${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length}]__**`, role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length == 0 ? "> No one has this Role" : thearray.slice(i, i + 20).join("\n").substring(0, leftnum <= 1024 ? leftnum : 1024)+ `${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length - 20 > 0 ? `\n${the_roster_db?.get(guild.id, pre+".rosteremoji")} ***\`${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length - 20}\` other Members have this Role ...***`: ""}`.substring(0, 1024), the_roster_db?.get(guild.id, pre+".inline"))
+              rosterembed.addField(`**__${role.name.toUpperCase()} [${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length}]__**`, role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length == 0 ? "> No one has this Role" : thearray.slice(i, i + 20).join("\n").substring(0, leftnum <= 1024 ? leftnum : 1024)+ `${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length - 20 > 0 ? `\n${guildData[pre].rosteremoji} ***\`${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length - 20}\` other Members have this Role ...***`: ""}`.substring(0, 1024), guildData[pre].inline)
               break;
             } catch (e) {
               console.error(e)
             }
           else
             try {
-              rosterembed.addField(i < 20 ? `**__${role.name.toUpperCase()} [${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length}]__**` : `\u200b`, role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length == 0 ? "> No one has this Role" : thearray.slice(i, i + 20).join("\n").substring(0, leftnum <= 1024 ? leftnum : 1024), the_roster_db?.get(guild.id, pre+".inline"))
+              rosterembed.addField(i < 20 ? `**__${role.name.toUpperCase()} [${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length}]__**` : `\u200b`, role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length == 0 ? "> No one has this Role" : thearray.slice(i, i + 20).join("\n").substring(0, leftnum <= 1024 ? leftnum : 1024), guildData[pre].inline)
             } catch (e) {
               console.error(e)
             }
@@ -368,28 +407,28 @@ async function edit_Roster_msg(client, guild, the_roster_db, pre) {
         //if there are no members who have this role, do this
         if(memberarray.length === 0){
           try {
-            rosterembed.addField(`**__${role.name.toUpperCase()} [0]__**`, "> ***No one has this Role***".substring(0, 1024), the_roster_db?.get(guild.id, pre+".inline"))
+            rosterembed.addField(`**__${role.name.toUpperCase()} [0]__**`, "> ***No one has this Role***".substring(0, 1024), guildData[pre].inline)
           } catch (e) {
             console.error(e)
           }
         }
       } else if (data.rosterstyle == "3") {
         //define the memberarray
-        let memberarray = role.members.map(member => `${the_roster_db?.get(guild.id, pre+".rosteremoji")} **${member.user.tag}**`)
+        let memberarray = role.members.map(member => `${guildData[pre].rosteremoji} **${member.user.tag}**`)
         //loopthrough the array for 20 members / page
         for (let i = 0; i < memberarray.length; i += 20) {
           var thearray = memberarray;
           if (rosterembed.length > 5000) break;
-          if (!the_roster_db?.get(guild.id, pre+".showallroles") || memberarray.length < 20)
+          if (!guildData[pre].showallroles || memberarray.length < 20)
             try {
-              rosterembed.addField(`**__${role.name.toUpperCase()} [${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length}]__**`, role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length == 0 ? "> No one has this Role" : thearray.slice(i, i + 20).join("\n").substring(0, leftnum <= 1024 ? leftnum : 1024)+ `${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length - 20 > 0 ? `\n${the_roster_db?.get(guild.id, pre+".rosteremoji")} ***\`${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length - 20}\` other Members have this Role ...***`: ""}`.substring(0, 1024), the_roster_db?.get(guild.id, pre+".inline"))
+              rosterembed.addField(`**__${role.name.toUpperCase()} [${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length}]__**`, role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length == 0 ? "> No one has this Role" : thearray.slice(i, i + 20).join("\n").substring(0, leftnum <= 1024 ? leftnum : 1024)+ `${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length - 20 > 0 ? `\n${guildData[pre].rosteremoji} ***\`${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length - 20}\` other Members have this Role ...***`: ""}`.substring(0, 1024), guildData[pre].inline)
               break;
             } catch (e) {
               console.error(e)
             }
           else
             try {
-              rosterembed.addField(i < 20 ? `**__${role.name.toUpperCase()} [${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length}]__**` : `\u200b`, role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length == 0 ? "> No one has this Role" : thearray.slice(i, i + 20).join("\n").substring(0, leftnum <= 1024 ? leftnum : 1024), the_roster_db?.get(guild.id, pre+".inline"))
+              rosterembed.addField(i < 20 ? `**__${role.name.toUpperCase()} [${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length}]__**` : `\u200b`, role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length == 0 ? "> No one has this Role" : thearray.slice(i, i + 20).join("\n").substring(0, leftnum <= 1024 ? leftnum : 1024), guildData[pre].inline)
             } catch (e) {
               console.error(e)
             }
@@ -397,14 +436,14 @@ async function edit_Roster_msg(client, guild, the_roster_db, pre) {
         //if there are no members who have this role, do this   
         if(memberarray.length === 0){
           try {
-            rosterembed.addField(`**__${role.name.toUpperCase()} [0]__**`, "> ***No one has this Role***".substring(0, 1024), the_roster_db?.get(guild.id, pre+".inline"))
+            rosterembed.addField(`**__${role.name.toUpperCase()} [0]__**`, "> ***No one has this Role***".substring(0, 1024), guildData[pre].inline)
           } catch (e) {
             console.error(e)
           }
         }
         /**
          * @INFO
-         * Bot Coded by Tomato#6966 | https://discord.gg/milrato
+         * Bot Coded by Tomato#6966 | https://discord.gg/dcdev
          * @INFO
          * Work for Milrato Development | https://milrato.eu
          * @INFO
@@ -414,21 +453,21 @@ async function edit_Roster_msg(client, guild, the_roster_db, pre) {
         
       } else if (data.rosterstyle == "4") {
         //define the memberarray
-        let memberarray = role.members.map(member => `${the_roster_db?.get(guild.id, pre+".rosteremoji")} **${member.user.username}**`)
+        let memberarray = role.members.map(member => `${guildData[pre].rosteremoji} **${member.user.username}**`)
         //loopthrough the array for 20 members / page
         for (let i = 0; i < memberarray.length; i += 20) {
           var thearray = memberarray;
           if (rosterembed.length > 5000) break;
-          if (!the_roster_db?.get(guild.id, pre+".showallroles") || memberarray.length < 20)
+          if (!guildData[pre].showallroles || memberarray.length < 20)
             try {
-              rosterembed.addField(`**__${role.name.toUpperCase()} [${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length}]__**`, role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length == 0 ? "> No one has this Role" : thearray.slice(i, i + 20).join("\n").substring(0, leftnum <= 1024 ? leftnum : 1024)+ `${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length - 20 > 0 ? `\n${the_roster_db?.get(guild.id, pre+".rosteremoji")} ***\`${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length - 20}\` other Members have this Role ...***`: ""}`.substring(0, 1024), the_roster_db?.get(guild.id, pre+".inline"))
+              rosterembed.addField(`**__${role.name.toUpperCase()} [${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length}]__**`, role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length == 0 ? "> No one has this Role" : thearray.slice(i, i + 20).join("\n").substring(0, leftnum <= 1024 ? leftnum : 1024)+ `${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length - 20 > 0 ? `\n${guildData[pre].rosteremoji} ***\`${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length - 20}\` other Members have this Role ...***`: ""}`.substring(0, 1024), guildData[pre].inline)
               break;
             } catch (e) {
               console.error(e)
             }
           else
             try {
-              rosterembed.addField(i < 20 ? `**__${role.name.toUpperCase()} [${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length}]__**` : `\u200b`, role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length == 0 ? "> No one has this Role" : thearray.slice(i, i + 20).join("\n").substring(0, leftnum <= 1024 ? leftnum : 1024), the_roster_db?.get(guild.id, pre+".inline"))
+              rosterembed.addField(i < 20 ? `**__${role.name.toUpperCase()} [${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length}]__**` : `\u200b`, role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length == 0 ? "> No one has this Role" : thearray.slice(i, i + 20).join("\n").substring(0, leftnum <= 1024 ? leftnum : 1024), guildData[pre].inline)
             } catch (e) {
               console.error(e)
             }
@@ -436,27 +475,27 @@ async function edit_Roster_msg(client, guild, the_roster_db, pre) {
         //if there are no members who have this role, do this
         if(memberarray.length === 0){
           try {
-            rosterembed.addField(`**__${role.name.toUpperCase()} [0]__**`, "> ***No one has this Role***".substring(0, 1024), the_roster_db?.get(guild.id, pre+".inline"))
+            rosterembed.addField(`**__${role.name.toUpperCase()} [0]__**`, "> ***No one has this Role***".substring(0, 1024), guildData[pre].inline)
           } catch (e) {
             console.error(e)
           }
         }
       } else if (data.rosterstyle == "5") {
         //define the memberarray
-        let memberarray = role.members.map(member => `${the_roster_db?.get(guild.id, pre+".rosteremoji")} <@${member.user.id}> | \`${member.user.id}\``)
+        let memberarray = role.members.map(member => `${guildData[pre].rosteremoji} <@${member.user.id}> | \`${member.user.id}\``)
         //loopthrough the array for 20 members / page
         for (let i = 0; i < memberarray.length; i += 20) {
           var thearray = memberarray;
           if (rosterembed.length > 5000) break;
-          if (!the_roster_db?.get(guild.id, pre+".showallroles") || memberarray.length < 20)
+          if (!guildData[pre].showallroles || memberarray.length < 20)
             try {
-              rosterembed.addField(`**__${role.name.toUpperCase()} [${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length}]__**`, role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length == 0 ? "> No one has this Role" : thearray.slice(i, i + 20).join("\n").substring(0, leftnum <= 1024 ? leftnum : 1024)+ `${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length - 20 > 0 ? `\n${the_roster_db?.get(guild.id, pre+".rosteremoji")} ***\`${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length - 20}\` other Members have this Role ...***`: ""}`.substring(0, 1024), the_roster_db?.get(guild.id, pre+".inline"))
+              rosterembed.addField(`**__${role.name.toUpperCase()} [${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length}]__**`, role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length == 0 ? "> No one has this Role" : thearray.slice(i, i + 20).join("\n").substring(0, leftnum <= 1024 ? leftnum : 1024)+ `${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length - 20 > 0 ? `\n${guildData[pre].rosteremoji} ***\`${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length - 20}\` other Members have this Role ...***`: ""}`.substring(0, 1024), guildData[pre].inline)
             } catch (e) {
               console.error(e)
             }
           else
             try {
-              rosterembed.addField(i < 20 ? `**__${role.name.toUpperCase()} [${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length}]__**` : `\u200b`, role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length == 0 ? "> No one has this Role" : thearray.slice(i, i + 20).join("\n").substring(0, leftnum <= 1024 ? leftnum : 1024), the_roster_db?.get(guild.id, pre+".inline"))
+              rosterembed.addField(i < 20 ? `**__${role.name.toUpperCase()} [${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length}]__**` : `\u200b`, role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length == 0 ? "> No one has this Role" : thearray.slice(i, i + 20).join("\n").substring(0, leftnum <= 1024 ? leftnum : 1024), guildData[pre].inline)
             } catch (e) {
               console.error(e)
             }
@@ -464,7 +503,7 @@ async function edit_Roster_msg(client, guild, the_roster_db, pre) {
         //if there are no members who have this role, do this
         if(memberarray.length === 0){
           try {
-            rosterembed.addField(`**__${role.name.toUpperCase()} [0]__**`, "> ***No one has this Role***".substring(0, 1024), the_roster_db?.get(guild.id, pre+".inline"))
+            rosterembed.addField(`**__${role.name.toUpperCase()} [0]__**`, "> ***No one has this Role***".substring(0, 1024), guildData[pre].inline)
             break;
           } catch (e) {
             console.error(e)
@@ -472,23 +511,23 @@ async function edit_Roster_msg(client, guild, the_roster_db, pre) {
         }
       } else if (data.rosterstyle == "6") {
         //define the memberarray
-        let memberarray = role.members.map(member => `${the_roster_db?.get(guild.id, pre+".rosteremoji")} <@${member.user.id}> | **${member.user.username}**`)
+        let memberarray = role.members.map(member => `${guildData[pre].rosteremoji} <@${member.user.id}> | **${member.user.username}**`)
         //loopthrough the array for 20 members / page
         for (let i = 0; i < memberarray.length; i += 20) {
 
           var thearray = memberarray;
           if (rosterembed.length > 5000) break;
           if (!thearray) return;
-          if (!the_roster_db?.get(guild.id, pre+".showallroles") || memberarray.length < 20)
+          if (!guildData[pre].showallroles || memberarray.length < 20)
             try {
-              rosterembed.addField(`**__${role.name.toUpperCase()} [${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length}]__**`, role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length == 0 ? "> No one has this Role" : thearray.slice(i, i + 20).join("\n").substring(0, leftnum <= 1024 ? leftnum : 1024)+ `${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length - 20 > 0 ? `\n${the_roster_db?.get(guild.id, pre+".rosteremoji")} ***\`${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length - 20}\` other Members have this Role ...***`: ""}`.substring(0, 1024), the_roster_db?.get(guild.id, pre+".inline"))
+              rosterembed.addField(`**__${role.name.toUpperCase()} [${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length}]__**`, role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length == 0 ? "> No one has this Role" : thearray.slice(i, i + 20).join("\n").substring(0, leftnum <= 1024 ? leftnum : 1024)+ `${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length - 20 > 0 ? `\n${guildData[pre].rosteremoji} ***\`${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length - 20}\` other Members have this Role ...***`: ""}`.substring(0, 1024), guildData[pre].inline)
               break;
             } catch (e) {
               console.error(e)
             }
           else
             try {
-              rosterembed.addField(i < 20 ? `**__${role.name.toUpperCase()} [${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length}]__**` : `\u200b`, role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length == 0 ? "> No one has this Role" : thearray.slice(i, i + 20).join("\n").substring(0, leftnum <= 1024 ? leftnum : 1024), the_roster_db?.get(guild.id, pre+".inline"))
+              rosterembed.addField(i < 20 ? `**__${role.name.toUpperCase()} [${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length}]__**` : `\u200b`, role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length == 0 ? "> No one has this Role" : thearray.slice(i, i + 20).join("\n").substring(0, leftnum <= 1024 ? leftnum : 1024), guildData[pre].inline)
             } catch (e) {
               console.error(e)
             }
@@ -496,28 +535,28 @@ async function edit_Roster_msg(client, guild, the_roster_db, pre) {
         //if there are no members who have this role, do this
         if(memberarray.length === 0){
           try {
-            rosterembed.addField(`**__${role.name.toUpperCase()} [0]__**`, "> ***No one has this Role***".substring(0, 1024), the_roster_db?.get(guild.id, pre+".inline"))
+            rosterembed.addField(`**__${role.name.toUpperCase()} [0]__**`, "> ***No one has this Role***".substring(0, 1024), guildData[pre].inline)
           } catch (e) {
             console.error(e)
           }
         }
       } else if (data.rosterstyle == "7") {
         //define the memberarray
-        let memberarray = role.members.map(member => `${the_roster_db?.get(guild.id, pre+".rosteremoji")} <@${member.user.id}> | **${member.user.tag}**`)
+        let memberarray = role.members.map(member => `${guildData[pre].rosteremoji} <@${member.user.id}> | **${member.user.tag}**`)
         //loopthrough the array for 20 members / page
         for (let i = 0; i < memberarray.length; i += 20) {
           var thearray = memberarray;
           if (rosterembed.length > 5000) break;
-          if (!the_roster_db?.get(guild.id, pre+".showallroles") || memberarray.length < 20)
+          if (!guildData[pre].showallroles || memberarray.length < 20)
             try {
-              rosterembed.addField(`**__${role.name.toUpperCase()} [${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length}]__**`, role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length == 0 ? "> No one has this Role" : thearray.slice(i, i + 20).join("\n").substring(0, leftnum <= 1024 ? leftnum : 1024)+ `${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length - 20 > 0 ? `\n${the_roster_db?.get(guild.id, pre+".rosteremoji")} ***\`${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length - 20}\` other Members have this Role ...***`: ""}`.substring(0, 1024), the_roster_db?.get(guild.id, pre+".inline"))
+              rosterembed.addField(`**__${role.name.toUpperCase()} [${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length}]__**`, role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length == 0 ? "> No one has this Role" : thearray.slice(i, i + 20).join("\n").substring(0, leftnum <= 1024 ? leftnum : 1024)+ `${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length - 20 > 0 ? `\n${guildData[pre].rosteremoji} ***\`${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length - 20}\` other Members have this Role ...***`: ""}`.substring(0, 1024), guildData[pre].inline)
               break;
             } catch (e) {
               console.error(e)
             }
           else
             try {
-              rosterembed.addField(i < 20 ? `**__${role.name.toUpperCase()} [${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length}]__**` : `\u200b`, role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length == 0 ? "> No one has this Role" : thearray.slice(i, i + 20).join("\n").substring(0, leftnum <= 1024 ? leftnum : 1024), the_roster_db?.get(guild.id, pre+".inline"))
+              rosterembed.addField(i < 20 ? `**__${role.name.toUpperCase()} [${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length}]__**` : `\u200b`, role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length == 0 ? "> No one has this Role" : thearray.slice(i, i + 20).join("\n").substring(0, leftnum <= 1024 ? leftnum : 1024), guildData[pre].inline)
             } catch (e) {
               console.error(e)
             }
@@ -525,7 +564,7 @@ async function edit_Roster_msg(client, guild, the_roster_db, pre) {
         //if there are no members who have this role, do this
         if(memberarray.length === 0){
           try {
-            rosterembed.addField(`**__${role.name.toUpperCase()} [0]__**`, "> ***No one has this Role***".substring(0, 1024), the_roster_db?.get(guild.id, pre+".inline"))
+            rosterembed.addField(`**__${role.name.toUpperCase()} [0]__**`, "> ***No one has this Role***".substring(0, 1024), guildData[pre].inline)
 
           } catch (e) {
             console.error(e)
@@ -533,7 +572,7 @@ async function edit_Roster_msg(client, guild, the_roster_db, pre) {
         }
       } else {
         //define the memberarray
-        let memberarray = role.members.map(member => `${the_roster_db?.get(guild.id, pre+".rosteremoji")} <@${member.user.id}> | \`${member.user.tag}\``)
+        let memberarray = role.members.map(member => `${guildData[pre].rosteremoji} <@${member.user.id}> | \`${member.user.tag}\``)
         //loopthrough the array for 20 members / page
         for (let i = 0; i < memberarray.length; i += 20) {
           var thearray = memberarray;
@@ -542,16 +581,16 @@ async function edit_Roster_msg(client, guild, the_roster_db, pre) {
             totalbreak = true;
             break;
           }
-          if (!the_roster_db?.get(guild.id, pre+".showallroles") || memberarray.length < 20)
+          if (!guildData[pre].showallroles || memberarray.length < 20)
             try {
-              rosterembed.addField(`**__${role.name.toUpperCase()} [${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length}]__**`, role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length == 0 ? "> No one has this Role" : thearray.slice(i, i + 20).join("\n").substring(0, leftnum <= 1024 ? leftnum : 1024)+ `${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length - 20 > 0 ? `\n${the_roster_db?.get(guild.id, pre+".rosteremoji")} ***\`${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length - 20}\` other Members have this Role ...***`: ""}`.substring(0, 1024), the_roster_db?.get(guild.id, pre+".inline"))
+              rosterembed.addField(`**__${role.name.toUpperCase()} [${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length}]__**`, role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length == 0 ? "> No one has this Role" : thearray.slice(i, i + 20).join("\n").substring(0, leftnum <= 1024 ? leftnum : 1024)+ `${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length - 20 > 0 ? `\n${guildData[pre].rosteremoji} ***\`${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length - 20}\` other Members have this Role ...***`: ""}`.substring(0, 1024), guildData[pre].inline)
               break;
             } catch (e) {
               console.error(e)
             }
           else
             try {
-              rosterembed.addField(i < 20 ? `**__${role.name.toUpperCase()} [${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length}]__**` : `\u200b`, role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length == 0 ? "> No one has this Role" : thearray.slice(i, i + 20).join("\n").substring(0, leftnum <= 1024 ? leftnum : 1024), the_roster_db?.get(guild.id, pre+".inline"))
+              rosterembed.addField(i < 20 ? `**__${role.name.toUpperCase()} [${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length}]__**` : `\u200b`, role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length == 0 ? "> No one has this Role" : thearray.slice(i, i + 20).join("\n").substring(0, leftnum <= 1024 ? leftnum : 1024), guildData[pre].inline)
             } catch (e) {
               console.error(e)
             }
@@ -559,7 +598,7 @@ async function edit_Roster_msg(client, guild, the_roster_db, pre) {
         //if there are no members who have this role, do this
         if(memberarray.length === 0){
           try {
-            rosterembed.addField(`**__${role.name.toUpperCase()} [0]__**`, "> ***No one has this Role***".substring(0, 1024), the_roster_db?.get(guild.id, pre+".inline"))
+            rosterembed.addField(`**__${role.name.toUpperCase()} [0]__**`, "> ***No one has this Role***".substring(0, 1024), guildData[pre].inline)
           } catch (e) {
             console.error(e)
           }
@@ -583,18 +622,20 @@ async function send_roster_msg(client, guild, the_roster_db, pre) {
     rosterchannel: "notvalid", showallroles: false, rostermessage: "", rostertitle: "Roster",
     rosteremoji: "➤", rosterstyle: "1", rosterroles: [], inline: false,
   }
-  dbEnsure(the_roster_db, guild.id, obj)
-  let es = client.settings.get(guild.id, "embed")
-  let ls = client.settings.get(guild.id, "language")
-  if (the_roster_db?.get(guild.id, pre+".rosterchannel") == "notvalid") return;
-  let channel = await client.channels.fetch(the_roster_db?.get(guild.id, pre+".rosterchannel")).catch(() => {});
+  await dbEnsure(the_roster_db, guild.id, obj)
+  let es = await client.settings.get(guild.id+".embed")
+  let ls = await client.settings.get(guild.id+".language")
+  let guildData = await the_roster_db.get(guild.id);
+  if(!guildData || !guildData[pre]) return;
+  if (guildData[pre].rosterchannel == "notvalid") return;
+  let channel = await client.channels.fetch(guildData[pre].rosterchannel).catch(() => {});
   //define the embed
   let rosterembed = new Discord.MessageEmbed()
     .setColor(es.color).setThumbnail(es.thumb ? es.footericon && (es.footericon.includes("http://") || es.footericon.includes("https://")) ? es.footericon : client.user.displayAvatarURL() : null)
-    .setTitle(String(the_roster_db?.get(guild.id, pre+".rostertitle")).substring(0, 256))
+    .setTitle(String(guildData[pre].rostertitle).substring(0, 256))
     .setFooter(client.getFooter(es))
   //get rosterole and loop through every single role
-  let rosterroles = the_roster_db?.get(guild.id, pre+".rosterroles");
+  let rosterroles = guildData[pre].rosterroles;
   if (!rosterroles || rosterroles.length === 0) try {
     rosterembed.addField(eval(client.la[ls]["handlers"]["functionsjs"]["functions"]["variablex_2"]), eval(client.la[ls]["handlers"]["functionsjs"]["functions"]["variable2"]))
   } catch (e) {
@@ -615,7 +656,7 @@ async function send_roster_msg(client, guild, the_roster_db, pre) {
       leftnum = rosterembed.length - leftnum - 100;
     }
     //define the memberarray
-    let memberarray = role.members.map(member => `${the_roster_db?.get(guild.id, pre+".rosteremoji")} <@${member.user.id}> | \`${member.user.tag}\``)
+    let memberarray = role.members.map(member => `${guildData[pre].rosteremoji} <@${member.user.id}> | \`${member.user.tag}\``)
     //loopthrough the array for 20 members / page
     for (let i = 0; i < memberarray.length; i += 20) {
       var thearray = memberarray;
@@ -624,16 +665,16 @@ async function send_roster_msg(client, guild, the_roster_db, pre) {
         totalbreak = true;
         break;
       }
-      if (!the_roster_db?.get(guild.id, pre+".showallroles") || memberarray.length < 20)
+      if (!guildData[pre].showallroles || memberarray.length < 20)
         try {
-          rosterembed.addField(`**__${role.name.toUpperCase()} [${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length}]__**`, role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length == 0 ? "> No one has this Role" : thearray.slice(i, i + 20).join("\n").substring(0, leftnum <= 1024 ? leftnum : 1024)+ `${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length - 20 > 0 ? `\n${the_roster_db?.get(guild.id, pre+".rosteremoji")} ***\`${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length - 20}\` other Members have this Role ...***`: ""}`.substring(0, 1024), the_roster_db?.get(guild.id, pre+".inline"))
+          rosterembed.addField(`**__${role.name.toUpperCase()} [${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length}]__**`, role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length == 0 ? "> No one has this Role" : thearray.slice(i, i + 20).join("\n").substring(0, leftnum <= 1024 ? leftnum : 1024)+ `${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length - 20 > 0 ? `\n${guildData[pre].rosteremoji} ***\`${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length - 20}\` other Members have this Role ...***`: ""}`.substring(0, 1024), guildData[pre].inline)
           break;
         } catch (e) {
           console.error(e)
         }
       else
         try {
-          rosterembed.addField(i < 20 ? `**__${role.name.toUpperCase()} [${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length}]__**` : `\u200b`, role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length == 0 ? "> No one has this Role" : thearray.slice(i, i + 20).join("\n").substring(0, leftnum <= 1024 ? leftnum : 1024), the_roster_db?.get(guild.id, pre+".inline"))
+          rosterembed.addField(i < 20 ? `**__${role.name.toUpperCase()} [${role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length}]__**` : `\u200b`, role.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966).length == 0 ? "> No one has this Role" : thearray.slice(i, i + 20).join("\n").substring(0, leftnum <= 1024 ? leftnum : 1024), guildData[pre].inline)
         } catch (e) {
           console.error(e)
         }
@@ -641,14 +682,14 @@ async function send_roster_msg(client, guild, the_roster_db, pre) {
     //if there are no members who have this role, do this
     if(memberarray.length === 0){
       try {
-        rosterembed.addField(`**__${role.name.toUpperCase()} [0]__**`, "> ***No one has this Role***".substring(0, 1024), the_roster_db?.get(guild.id, pre+".inline"))
+        rosterembed.addField(`**__${role.name.toUpperCase()} [0]__**`, "> ***No one has this Role***".substring(0, 1024), guildData[pre].inline)
       } catch (e) {
         console.error(e)
       }
     }
   }
   channel.send({embeds: [rosterembed]}).then(msg => {
-    the_roster_db?.set(guild.id, msg.id, pre+".rostermessage");
+    the_roster_db?.set(guild.id+"."+pre+".rostermessage", msg.id);
     setTimeout(() => {
       edit_Roster_msg(client, guild, the_roster_db, pre)
     }, 500)
@@ -680,7 +721,7 @@ async function create_transcript_buffer(Messages, Channel, Guild){
               `<div class="ath-av-container"><img class="ath-av"src="${msg.author.displayAvatarURL({dynamic: true})}" /></div>` + 
               `<div class="messages">` + 
               `<span class="ath-name" title="${msg.author.username}" style="color: ${msg.member.roles.highest.hexColor};">${msg.author.tag}</span>`;
-              if(msg.author.bot) subcontent += `<span class="bot-tag">BOT</span>`;
+              if(msg.author?.bot) subcontent += `<span class="bot-tag">BOT</span>`;
               subcontent += `<span class="tst">ID: ${msg.author.id} | </span>` + 
               `<span class="tst">${time} ${msg.editedTimestamp ? `(edited)` : msg.editedAt ? `(edited)` : ""}</span>` + 
               `<div class="message">`;
@@ -755,7 +796,7 @@ async function create_transcript_buffer(Messages, Channel, Guild){
               `<div class="ath-av-container"><img class="ath-av"src="https://cdn-0.emojis.wiki/emoji-pics/twitter/pushpin-twitter.png" style="background-color: #000;filter: alpha(opacity=40);opacity: 0.4;" /></div>` + 
               `<div class="messages">` + 
               `<span class="ath-name" title="${msg.author.username}" style="color: ${msg.member.roles.highest.hexColor};">${msg.author.tag}</span>`;
-              if(msg.author.bot) subcontent += `<span class="bot-tag">BOT</span>`;
+              if(msg.author?.bot) subcontent += `<span class="bot-tag">BOT</span>`;
               subcontent += `<span class="tst" style="font-weight:500;color:#848484;font-size: 14px;">pinned a message to this channel.</span><span class="tst">${time}</span></div></div></div>`;
             messagesArray.push(subcontent);
             }
@@ -1059,18 +1100,25 @@ function getRandomNum(min, max) {
 
 function createBar(player) {
   try {
+    const full = "▰";
+    const empty = "▱"
+    const size = "▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱".length;
+    if (!player.queue.current) return `**[${full}${empty.repeat(size - 1)}]**\n**NaN / NaN**`;
+    const percent = player.queue.current.duration == 0 ? null : Math.floor(player.position / player.queue.current.duration * 100)
+    const fullBars = Math.round(size * (percent / 100));
+    const emptyBars = size - fullBars;
+    return `**${full.repeat(fullBars)}${empty.repeat(emptyBars)}**\n***${format(player.position).split("|")[0].trim()} / ${(player.queue.current.duration==0?" ◉ LIVE":format(player.queue.current.duration).split("|")[0].trim())}***`
+    /*
     let size = 25;
     let line = "▬";
     //player.queue.current.duration == 0 ? player.position : player.queue.current.duration, player.position, 25, "▬", "🔷")
-    if (!player.queue.current) return `**[${"🔷"}${line.repeat(size - 1)}]**\n**00:00:00 / 00:00:00**`;
     let current = player.queue.current.duration !== 0 ? player.position : player.queue.current.duration;
     let total = player.queue.current.duration;
-
     let slider = "🔷";
     let bar = current > total ? [line.repeat(size / 2 * 2), (current / total) * 100] : [line.repeat(Math.round(size / 2 * (current / total))).replace(/.$/, slider) + line.repeat(size - Math.round(size * (current / total)) + 1), current / total];
-    if (!String(bar).includes("🔷")) return `**[${"🔷"}${line.repeat(size - 1)}]**\n**00:00:00 / 00:00:00**`;
-    return `**[${bar[0]}]**\n**${new Date(player.position).toISOString().substring(11, 8)+" / "+(player.queue.current.duration==0?" ◉ LIVE":new Date(player.queue.current.duration).toISOString().substring(11, 8))}**`;
-  } catch (e) {
+    if (!String(bar).includes("🔷")) return `**[${"🔷"}${line.repeat(size - 1)}]**\n**00:00:00 / ${(player.queue.current.duration==0?" ◉ LIVE":format(player.queue.current.duration).split("|")[0].trim())}**`;
+    return `**[${bar[0]}]**\n**${(format(player.position).split("|")[0].trim())+" / "+(player.queue.current.duration==0?" ◉ LIVE":format(player.queue.current.duration).split("|")[0].trim())}**`;
+  */} catch (e) {
     console.log(String(e.stack).grey.bgRed)
   }
 }
@@ -1261,6 +1309,7 @@ function stations(client, prefix, message) {
 
 function escapeRegex(str) {
   try {
+    if(!str || typeof str != "string") return "";
     return str.replace(/[.*+?^${}()|[\]\\]/g, `\\$&`);
   } catch (e) {
     console.log(String(e.stack).grey.bgRed)
@@ -1268,9 +1317,8 @@ function escapeRegex(str) {
 }
 
 async function autoplay(client, player, type) {
-  let es = client.settings.get(player.guild, "embed") 
-  if(!client.settings.has(player.guild, "language")) dbEnsure(client.settings, player.guild, { language: "en" });
-  let ls = client.settings.get(player.guild, "language")
+  let es = await client.settings.get(player.guild+ ".embed") 
+  let ls = await client.settings.get(player.guild+ ".language")
   try {
     if (player.queue.length > 0) return;
     const previoustrack = player.get("previoustrack") || player.queue.current;
@@ -1279,7 +1327,7 @@ async function autoplay(client, player, type) {
     const mixURL = `https://www.youtube.com/watch?v=${previoustrack.identifier}&list=RD${previoustrack.identifier}`;
     const response = await client.manager.search(mixURL, previoustrack.requester);
     //if nothing is found, send error message, plus if there  is a delay for the empty QUEUE send error message TOO
-    if (!response || response.loadType === 'LOAD_FAILED' || response.loadType !== 'PLAYLIST_LOADED') {
+    if (!response || response.loadType === 'LOAD_FAILED' || response.loadType !== 'PLAYLIST_LOADED' || response.tracks.filter(r => r.identifier != previoustrack.identifier).length == 0) {
       let embed = new MessageEmbed()
         .setTitle(eval(client.la[ls]["handlers"]["functionsjs"]["functions"]["variable7"]))
         .setDescription(config.settings.LeaveOnEmpty_Queue.enabled && type != "skip" ? `I'll leave the Channel: \`${client.channels.cache.get(player.voiceChannel).name}\` in: \`${ms(config.settings.LeaveOnEmpty_Queue.time_delay, { long: true })}\`, If the Queue stays Empty! ` : eval(client.la[ls]["handlers"]["functionsjs"]["functions"]["variable9"]))
@@ -1330,7 +1378,7 @@ async function autoplay(client, player, type) {
         player.destroy();
       }
     }
-    player.queue.add(response.tracks[Math.floor(Math.random() * Math.floor(response.tracks.length))]);
+    player.queue.add(response.filter(r => r.identifier != previoustrack.identifier).tracks[Math.floor(Math.random() * Math.floor(response.tracks.length))]);
     return player.play();
   } catch (e) {
     console.log(String(e.stack).grey.bgRed)
@@ -1369,14 +1417,14 @@ function nFormatter(num, digits = 2) {
 }
 
 async function swap_pages(client, message, description, TITLE) {
-  const settings = client.settings.get(message.guild.id)
+  const settings = await client.settings.get(message.guild.id)
   let es = settings.embed;
   let prefix = settings.prefix
   let ls = settings.language;
   let cmduser = message.author;
 /**
  * @INFO
- * Bot Coded by Tomato#6966 | https://discord.gg/milrato
+ * Bot Coded by Tomato#6966 | https://discord.gg/dcdev
  * @INFO
  * Work for Milrato Development | https://milrato.eu
  * @INFO
@@ -1438,10 +1486,10 @@ async function swap_pages(client, message, description, TITLE) {
       components: allbuttons
   });
   //create a collector for the thinggy
-  const collector = swapmsg.createMessageComponentCollector({filter: (i) => i?.isButton() && i?.user && i?.user.id == cmduser.id && i?.message.author.id == client.user.id, time: 180e3 }); //collector for 5 seconds
+  const collector = swapmsg.createMessageComponentCollector({filter: (i) => i?.isButton() && i?.user && i?.user.id == cmduser.id && i?.message.author?.id == client.user.id, time: 180e3 }); //collector for 5 seconds
   //array of all embeds, here simplified just 10 embeds with numbers 0 - 9
   collector.on('collect', async b => {
-      if(b?.user.id !== message.author.id)
+      if(b?.user.id !== message.author?.id)
         return b?.reply({content: `<:no:833101993668771842> **Only the one who typed ${prefix}help is allowed to react!**`, ephemeral: true})
         //page forward
         if(b?.customId == "1") {
@@ -1505,7 +1553,7 @@ async function swap_pages2(client, message, embeds) {
   let button_blank = new MessageButton().setStyle('SECONDARY').setCustomId('button_blank').setLabel("\u200b").setDisabled();
   let button_stop = new MessageButton().setStyle('DANGER').setCustomId('stop').setEmoji("🛑").setLabel("Stop")
   const allbuttons = [new MessageActionRow().addComponents([button_back, button_home, button_forward, button_blank, button_stop])]
-  let prefix = client.settings.get(message.guild.id, "prefix");
+  let prefix = await client.settings.get(message.guild.id+".prefix");
   //Send message with buttons
   let swapmsg = await message.channel.send({   
       content: `***Click on the __Buttons__ to swap the Pages***`,
@@ -1513,10 +1561,10 @@ async function swap_pages2(client, message, embeds) {
       components: allbuttons
   });
   //create a collector for the thinggy
-  const collector = swapmsg.createMessageComponentCollector({filter: (i) => i?.isButton() && i?.user && i?.user.id == cmduser.id && i?.message.author.id == client.user.id, time: 180e3 }); //collector for 5 seconds
+  const collector = swapmsg.createMessageComponentCollector({filter: (i) => i?.isButton() && i?.user && i?.user.id == cmduser.id && i?.message.author?.id == client.user.id, time: 180e3 }); //collector for 5 seconds
   //array of all embeds, here simplified just 10 embeds with numbers 0 - 9
   collector.on('collect', async b => {
-      if(b?.user.id !== message.author.id)
+      if(b?.user.id !== message.author?.id)
         return b?.reply({content: `<:no:833101993668771842> **Only the one who typed ${prefix}help is allowed to react!**`, ephemeral: true})
         //page forward
         if(b?.customId == "1") {
@@ -1595,7 +1643,7 @@ async function swap_pages2_interaction(client, interaction, embeds) {
       ephemeral: true
   });
   //create a collector for the thinggy
-  const collector = swapmsg.createMessageComponentCollector({filter: (i) => i?.isButton() && i?.user && i?.user.id == cmduser.id && i?.message.author.id == client.user.id, time: 180e3 }); //collector for 5 seconds
+  const collector = swapmsg.createMessageComponentCollector({filter: (i) => i?.isButton() && i?.user && i?.user.id == cmduser.id && i?.message.author?.id == client.user.id, time: 180e3 }); //collector for 5 seconds
   //array of all embeds, here simplified just 10 embeds with numbers 0 - 9
   collector.on('collect', async b => {
       if(b?.user.id !== cmduser.id)
@@ -1651,407 +1699,405 @@ async function swap_pages2_interaction(client, interaction, embeds) {
   })
 
 }
-function databasing(client, guildid, userid) {
-  if(!client || client == undefined || !client.user || client.user == undefined) return;
-  try {
-    if (guildid) {
-      dbEnsure(client.customcommands, guildid, {
-        commands: []
-      })
-      dbEnsure(client.keyword, guildid, {
-        commands: []
-      })
-      /**
-       * @INFO
-       * Bot Coded by Tomato#6966 | https://discord.gg/milrato
-       * @INFO
-       * Work for Milrato Development | https://milrato.eu
-       * @INFO
-       * Please mention him / Milrato Development, when using this Code!
-       * @INFO
-       */
-       dbEnsure(client.social_log, guildid, {
-        tiktok: {
-          channels: [],
-          dc_channel: ""
-        },
-        youtube: {
-          channels: [],
-          dc_channel: ""
-        },
-        twitter: {
-          TWITTER_USER_ID: "",
-          TWITTER_USER_NAME_ONLY_THOSE: "",
-          DISCORD_CHANNEL_ID: "",
-          latesttweet: "",
-          REETWET: false,
-          infomsg: "**{Twittername}** posted a new Tweet:\n\n{url}"
-        },
-        secondtwitter: {
-          TWITTER_USER_ID: "",
-          TWITTER_USER_NAME_ONLY_THOSE: "",
-          DISCORD_CHANNEL_ID: "",
-          latesttweet: "",
-          REETWET: false,
-          infomsg: "**{Twittername}** posted a new Tweet:\n\n{url}"
-        },
-        twitch: {
-          DiscordServerId: guildid,
-          channelId: "",
-          roleID_PING: "",
-          roleID_GIVE: "",
-          channels: [],
-        }
-      })
-      for (let i = 0; i <= 25; i++) {
-          let index = i + 1;
-          dbEnsure(client[`roster${index != 1 ? index : ""}`], guildid, {
-            rosterchannel: "notvalid",
-            rosteremoji: "➤",
-            rostermessage: "",
-            rostertitle: "Roster",
-            rosterstyle: "1",
-            rosterroles: [],
-            inline: false,
-          })
-      }
-      dbEnsure(client.stats, guildid, {
-        commands: 0,
-        songs: 0
-      });
-      dbEnsure(client.premium, guildid, {
-        enabled: false,
-      })
-      const ensureData = {
-        textchannel: "0",
-        voicechannel: "0",
-        category: "0",
-        message_cmd_info: "0",
-        message_queue_info: "0",
-        message_track_info: "0",
-        blacklist: {
-          whitelistedroles: [],
-          words: [],
-          enabled: true
-        }
-      }
-      for(let i = 0; i<=100;i++){
-        ensureData[`ticketsystem${i}`] = {
-          enabled: false,
-          guildid: guildid,
-          defaultname: "🎫・{count}・{member}",
-          messageid: "",
-          channelid: "",
-          parentid: "",
-          claim: {
-            enabled: false,
-            messageOpen: "Dear {user}!\n> *Please wait until a Staff Member, claimed your Ticket!*",
-            messageClaim: "{claimer} **has claimed the Ticket!**\n> He will now give {user} support!"
+async function databasing(client, guildid, userid) {
+  return new Promise(async (res) => {
+  if(!client || client == undefined || !client.user || client.user == undefined) return res(true);
+    try {
+      if (guildid) {
+        
+        await dbEnsure(client.customcommands, guildid, {
+          commands: []
+        })
+        await dbEnsure(client.keyword, guildid, {
+          commands: []
+        })
+        /**
+         * @INFO
+         * Bot Coded by Tomato#6966 | https://discord.gg/dcdev
+         * @INFO
+         * Work for Milrato Development | https://milrato.eu
+         * @INFO
+         * Please mention him / Milrato Development, when using this Code!
+         * @INFO
+         */
+        await dbEnsure(client.social_log, guildid, {
+          tiktok: {
+            channels: [],
+            dc_channel: ""
           },
-          message: "Hey {user}, thanks for opening an ticket! Someone will help you soon!",
-          adminroles: []
+          youtube: {
+            channels: [],
+            dc_channel: ""
+          },
+          twitter: {
+            TWITTER_USER_ID: "",
+            TWITTER_USER_NAME_ONLY_THOSE: "",
+            DISCORD_CHANNEL_ID: "",
+            latesttweet: "",
+            REETWET: false,
+            infomsg: "**{Twittername}** posted a new Tweet:\n\n{url}"
+          },
+          secondtwitter: {
+            TWITTER_USER_ID: "",
+            TWITTER_USER_NAME_ONLY_THOSE: "",
+            DISCORD_CHANNEL_ID: "",
+            latesttweet: "",
+            REETWET: false,
+            infomsg: "**{Twittername}** posted a new Tweet:\n\n{url}"
+          },
+          twitch: {
+            DiscordServerId: guildid,
+            channelId: "",
+            roleID_PING: "",
+            roleID_GIVE: "",
+            channels: [],
+          }
+        })
+        await dbEnsure(client.stats, guildid, {
+          commands: 0,
+          songs: 0
+        });
+        await dbEnsure(client.premium, guildid, {
+          enabled: false,
+        })
+        const ensureData = {
+          textchannel: "0",
+          voicechannel: "0",
+          category: "0",
+          message_cmd_info: "0",
+          message_queue_info: "0",
+          message_track_info: "0",
+          blacklist: {
+            whitelistedroles: [],
+            words: [],
+            enabled: true
+          }
         }
+        for(let i = 0; i<=100;i++){
+          ensureData[`ticketsystem${i}`] = {
+            enabled: false,
+            guildid: guildid,
+            defaultname: "🎫・{count}・{member}",
+            messageid: "",
+            channelid: "",
+            parentid: "",
+            claim: {
+              enabled: false,
+              messageOpen: "Dear {user}!\n> *Please wait until a Staff Member, claimed your Ticket!*",
+              messageClaim: "{claimer} **has claimed the Ticket!**\n> He will now give {user} support!"
+            },
+            message: "Hey {user}, thanks for opening an ticket! Someone will help you soon!",
+            adminroles: []
+          }
+        }
+        await dbEnsure(client.setups, guildid, ensureData);
+        await dbEnsure(client.blacklist, guildid, {
+          words: [],
+          mute_amount: 5,
+          whitelistedchannels: [],
+        });
+        await dbEnsure(client.settings, guildid, {
+          prefix: config.prefix,
+          pruning: true,
+          requestonly: true,
+          autobackup: false,
+          defaultvolume: 30,
+          channel: "773836425678422046",
+          adminlog: "no",
+          dailyfact: "no",
+          reportlog: "no",
+          aichat: "no",
+          autoembeds: [],
+          volume: "69",
+          adminroles: [],
+          language: "en",
+
+          mute: {
+            style: "timeout",
+            roleId: "",
+            defaultTime: 60000,  
+          },
+
+          warnsettings: {
+            ban: false,
+            kick: false,
+            roles: [
+              /*
+              { warncount: 0, roleid: "1212031723081723"}
+              */
+            ]
+          },
+
+  /**
+   * @INFO
+   * Bot Coded by Tomato#6966 | https://discord.gg/dcdev
+   * @INFO
+   * Work for Milrato Development | https://milrato.eu
+   * @INFO
+   * Please mention him / Milrato Development, when using this Code!
+   * @INFO
+   */
+
+          showdisabled: true,
+
+          MUSIC: true,
+          FUN: true,
+          ANIME: true,
+          MINIGAMES: true,
+          ECONOMY: true,
+          SCHOOL: true,
+          NSFW: false,
+          VOICE: true,
+          RANKING: true,
+          PROGRAMMING: true,
+          CUSTOMQUEUE: true,
+          FILTER: true,
+          SOUNDBOARD: true,
+          antispam: {
+            enabled: true,
+            whitelistedchannels: [],
+            limit: 7,
+            mute_amount: 2,
+          },
+          antimention: {
+            enabled: true,
+            whitelistedchannels: [],
+            limit: 5,
+            mute_amount: 2,
+          },
+          antiemoji: {
+            enabled: true,
+            whitelistedchannels: [],
+            limit: 10,
+            mute_amount: 2,
+          },
+          anticaps: {
+            enabled: true,
+            whitelistedchannels: [],
+            percent: 75,
+            mute_amount: 2,
+          },
+          cmdadminroles: {
+            removetimeout: [],
+            timeout: [],
+            idban: [],
+            snipe: [],
+            listbackups: [],
+            loadbackup: [],
+            createbackup: [],
+            embed: [],
+            editembed: [],
+            editimgembed: [],
+            imgembed: [],
+            useridban: [],
+            addrole: [],
+            addroletoeveryone: [],
+            ban: [],
+            channellock: [],
+            channelunlock: [],
+            clear: [],
+            clearbotmessages: [],
+            close: [],
+            copymessage: [],
+            deleterole: [],
+            detailwarn: [],
+            dm: [],
+            editembeds: [],
+            editimgembeds: [],
+            embeds: [],
+            embedbuilder: [],
+            esay: [],
+            giveaway: [],
+            image: [],
+            imgembeds: [],
+            kick: [],
+            mute: [],
+            nickname: [],
+            unlockthread: [],
+            unarchivethread: [],
+            lockthread: [],
+            archivethread: [],
+            leavethread: [],
+            lockchannel: [],
+            unlockchannel: [],
+            jointhread: [],
+            jointhreads: [],
+            setautoarchiveduration: [],
+            tempmute: [],
+            permamute: [],
+            poll: [],
+            react: [],
+            removeallwarns: [],
+            removerole: [],
+            report: [],
+            say: [],
+            slowmode: [],
+            suggest: [],
+            ticket: [],
+            unmute: [],
+            unwarn: [],
+            updatemessage: [],
+            warn: [],
+            warnings: [],
+          },
+          antilink: {
+            enabled: false,
+            whitelistedchannels: [],
+            whitelistedlinks: [
+              "giphy.com/gifs",
+              "c.tenor.com",
+              "tenor.com/view",
+              "milrato.dev",
+              "milrato.eu",
+              "github?.com",
+              "mozilla.org",
+              "w3schools.com",],
+            mute_amount: 2,
+          },
+          antidiscord: {
+            enabled: false,
+            whitelistedchannels: [],
+            whitelistedlinks: [
+              "discord.gg/dcdev",
+              "discord.gg/djs",],
+            mute_amount: 2,
+          },
+          embed: {
+            "color": ee.color,
+            "thumb": true,
+            "wrongcolor": ee.wrongcolor,
+            "footertext": client.guilds.cache.get(guildid) ? client.guilds.cache.get(guildid).name : ee.footertext,
+            "footericon": client.guilds.cache.get(guildid) ? client.guilds.cache.get(guildid).iconURL({
+              dynamic: true
+            }) : ee.footericon,
+          },
+          logger: {
+            "channel": "no",
+            "webhook_id": "",
+            "webhook_token": ""
+          },
+          welcome: {
+            captcha: false,
+            roles: [],
+            channel: "nochannel",
+
+            secondchannel: "nochannel",
+            secondmsg: ":wave: {user} **Welcome to our Server!** :v:",
+
+
+            image: true,
+            custom: "no",
+            background: "transparent",
+            frame: true,
+            framecolor: "white",
+            pb: true,
+            invite: true,
+            discriminator: true,
+            membercount: true,
+            servername: true,
+            msg: "{user} Welcome to this Server",
+
+
+            dm: false,
+            imagedm: false,
+            customdm: "no",
+            backgrounddm: "transparent",
+            framedm: true,
+            framecolordm: "white",
+            pbdm: true,
+            invitedm: true,
+            discriminatordm: true,
+            membercountdm: true,
+            servernamedm: true,
+            dm_msg: "{user} Welcome to this Server"
+          },
+          leave: {
+            channel: "nochannel",
+
+            image: true,
+            custom: "no",
+            background: "transparent",
+            frame: true,
+            framecolor: "white",
+            pb: true,
+            invite: true,
+            discriminator: true,
+            membercount: true,
+            servername: true,
+            msg: "{user} left this Server",
+
+
+            dm: true,
+
+            imagedm: true,
+            customdm: "no",
+            backgrounddm: "transparent",
+            framedm: true,
+            framecolordm: "white",
+            pbdm: true,
+            invitedm: true,
+            discriminatordm: true,
+            membercountdm: true,
+            servernamedm: true,
+            dm_msg: "{user} left this Server"
+          },
+          song: "https://streams.ilovemusic.de/iloveradio14.mp3",
+          djroles: [],
+          djonlycmds: ["autoplay", "clearqueue", "forward", "loop", "jump", "loopqueue", "loopsong", "move", "pause", "resume", "removetrack", "removedupe", "restart", "rewind", "seek", "shuffle", "skip", "stop", "volume"],
+          botchannel: [],
+        });
+        await dbEnsure(client.jtcsettings, guildid, {
+          prefix: ".",
+          channel: "",
+          channelname: "{user}' Room",
+          guild: guildid,
+        });
+        await dbEnsure(client.musicsettings, guildid, {"channel": "","message": ""});
+        await dbEnsure(client.stats, guildid, {commands: 0,songs: 0});
+        
       }
-      dbEnsure(client.setups, guildid, ensureData);
-      dbEnsure(client.blacklist, guildid, {
-        words: [],
-        mute_amount: 5,
-        whitelistedchannels: [],
-      });
-      dbEnsure(client.settings, guildid, {
-        prefix: config.prefix,
-        pruning: true,
-        requestonly: true,
-        autobackup: false,
-        defaultvolume: 30,
-        channel: "773836425678422046",
-        adminlog: "no",
-        dailyfact: "no",
-        reportlog: "no",
-        autoembeds: [],
-        volume: "69",
-        adminroles: [],
-        language: "en",
-
-        mute: {
-          style: "timeout",
-          roleId: "",
-          defaultTime: 60000,  
-        },
-
-        warnsettings: {
-          ban: false,
-          kick: false,
-          roles: [
-            /*
-            { warncount: 0, roleid: "1212031723081723"}
-            */
-          ]
-        },
-
-/**
- * @INFO
- * Bot Coded by Tomato#6966 | https://discord.gg/milrato
- * @INFO
- * Work for Milrato Development | https://milrato.eu
- * @INFO
- * Please mention him / Milrato Development, when using this Code!
- * @INFO
- */
-
-        showdisabled: true,
-
-        MUSIC: true,
-        FUN: true,
-        ANIME: true,
-        MINIGAMES: true,
-        ECONOMY: true,
-        SCHOOL: true,
-        NSFW: false,
-        VOICE: true,
-        RANKING: true,
-        PROGRAMMING: true,
-        CUSTOMQUEUE: true,
-        FILTER: true,
-        SOUNDBOARD: true,
-        antispam: {
-          enabled: true,
-          whitelistedchannels: [],
-          limit: 7,
-          mute_amount: 2,
-        },
-        antimention: {
-          enabled: true,
-          whitelistedchannels: [],
-          limit: 5,
-          mute_amount: 2,
-        },
-        antiemoji: {
-          enabled: true,
-          whitelistedchannels: [],
-          limit: 10,
-          mute_amount: 2,
-        },
-        anticaps: {
-          enabled: true,
-          whitelistedchannels: [],
-          percent: 75,
-          mute_amount: 2,
-        },
-        cmdadminroles: {
-          removetimeout: [],
-          timeout: [],
-          idban: [],
-          snipe: [],
-          listbackups: [],
-          loadbackup: [],
-          createbackup: [],
-          embed: [],
-          editembed: [],
-          editimgembed: [],
-          imgembed: [],
-          useridban: [],
-          addrole: [],
-          addroletoeveryone: [],
+      if (userid) {
+        await dbEnsure(client.premium, userid, {
+          enabled: false,
+        })
+        await dbEnsure(client.queuesaves, userid, {
+          "TEMPLATEQUEUEINFORMATION": ["queue", "sadasd"]
+        });
+        await dbEnsure(client.settings, userid, {
+          dm: true,
+        })
+        await dbEnsure(client.stats, guildid + userid, {
           ban: [],
-          channellock: [],
-          channelunlock: [],
-          clear: [],
-          clearbotmessages: [],
-          close: [],
-          copymessage: [],
-          deleterole: [],
-          detailwarn: [],
-          dm: [],
-          editembeds: [],
-          editimgembeds: [],
-          embeds: [],
-          embedbuilder: [],
-          esay: [],
-          giveaway: [],
-          image: [],
-          imgembeds: [],
           kick: [],
           mute: [],
-          nickname: [],
-          unlockthread: [],
-          unarchivethread: [],
-          lockthread: [],
-          archivethread: [],
-          leavethread: [],
-          lockchannel: [],
-          unlockchannel: [],
-          jointhread: [],
-          jointhreads: [],
-          setautoarchiveduration: [],
-          tempmute: [],
-          permamute: [],
-          poll: [],
-          react: [],
-          removeallwarns: [],
-          removerole: [],
-          report: [],
-          say: [],
-          slowmode: [],
-          suggest: [],
           ticket: [],
-          unmute: [],
-          unwarn: [],
-          updatemessage: [],
+          says: [],
           warn: [],
+        })
+      }
+      if (userid && guildid) {
+        await dbEnsure(client.stats, guildid + userid, {
+          ban: [],
+          kick: [],
+          mute: [],
+          ticket: [],
+          says: [],
+          warn: [],
+        })
+        await dbEnsure(client.userProfiles, userid, {
+          id: userid,
+          guild: guildid,
+          totalActions: 0,
           warnings: [],
-        },
-        antilink: {
-          enabled: false,
-          whitelistedchannels: [],
-          mute_amount: 2,
-        },
-        antidiscord: {
-          enabled: false,
-          whitelistedchannels: [],
-          mute_amount: 2,
-        },
-        embed: {
-          "color": ee.color,
-          "thumb": true,
-          "wrongcolor": ee.wrongcolor,
-          "footertext": client.guilds.cache.get(guildid) ? client.guilds.cache.get(guildid).name : ee.footertext,
-          "footericon": client.guilds.cache.get(guildid) ? client.guilds.cache.get(guildid).iconURL({
-            dynamic: true
-          }) : ee.footericon,
-        },
-        logger: {
-          "channel": "no",
-          "webhook_id": "",
-          "webhook_token": ""
-        },
-        welcome: {
-          captcha: false,
-          roles: [],
-          channel: "nochannel",
-
-          secondchannel: "nochannel",
-          secondmsg: ":wave: {user} **Welcome to our Server!** :v:",
-
-
-          image: true,
-          custom: "no",
-          background: "transparent",
-          frame: true,
-          framecolor: "white",
-          pb: true,
-          invite: true,
-          discriminator: true,
-          membercount: true,
-          servername: true,
-          msg: "{user} Welcome to this Server",
-
-
-          dm: false,
-          imagedm: false,
-          customdm: "no",
-          backgrounddm: "transparent",
-          framedm: true,
-          framecolordm: "white",
-          pbdm: true,
-          invitedm: true,
-          discriminatordm: true,
-          membercountdm: true,
-          servernamedm: true,
-          dm_msg: "{user} Welcome to this Server"
-        },
-        leave: {
-          channel: "nochannel",
-
-          image: true,
-          custom: "no",
-          background: "transparent",
-          frame: true,
-          framecolor: "white",
-          pb: true,
-          invite: true,
-          discriminator: true,
-          membercount: true,
-          servername: true,
-          msg: "{user} left this Server",
-
-
-          dm: true,
-
-          imagedm: true,
-          customdm: "no",
-          backgrounddm: "transparent",
-          framedm: true,
-          framecolordm: "white",
-          pbdm: true,
-          invitedm: true,
-          discriminatordm: true,
-          membercountdm: true,
-          servernamedm: true,
-          dm_msg: "{user} left this Server"
-        },
-        song: "https://streams.ilovemusic.de/iloveradio14.mp3",
-        djroles: [],
-        djonlycmds: ["autoplay", "clearqueue", "forward", "loop", "jump", "loopqueue", "loopsong", "move", "pause", "resume", "removetrack", "removedupe", "restart", "rewind", "seek", "shuffle", "skip", "stop", "volume"],
-        botchannel: [],
-      });
-      dbEnsure(client.jtcsettings, guildid, {
-        prefix: ".",
-        channel: "",
-        channelname: "{user}' Room",
-        guild: guildid,
-      });
-      dbEnsure(client.jtcsettings2, guildid, {
-        channel: "",
-        channelname: "{user}' Channel",
-        guild: guildid,
-      });
-      dbEnsure(client.jtcsettings3, guildid, {
-        channel: "",
-        channelname: "{user}' Lounge",
-        guild: guildid,
-      });
+          kicks: []
+        });
+      }
+      return res(e);;
+    } catch (e) {
+      res(e);
     }
-    if (userid) {
-      dbEnsure(client.premium, userid, {
-        enabled: false,
-      })
-      dbEnsure(client.queuesaves, userid, {
-        "TEMPLATEQUEUEINFORMATION": ["queue", "sadasd"]
-      });
-      dbEnsure(client.settings, userid, {
-        dm: true,
-      })
-      dbEnsure(client.stats, guildid + userid, {
-        ban: [],
-        kick: [],
-        mute: [],
-        ticket: [],
-        says: [],
-        warn: [],
-      })
-    }
-    if (userid && guildid) {
-      dbEnsure(client.stats, guildid + userid, {
-        ban: [],
-        kick: [],
-        mute: [],
-        ticket: [],
-        says: [],
-        warn: [],
-      })
-      dbEnsure(client.userProfiles, userid, {
-        id: userid,
-        guild: guildid,
-        totalActions: 0,
-        warnings: [],
-        kicks: []
-      });
-    }
-    return;
-  } catch (e) {
-    console.log(String(e.stack).grey.bgRed)
-  }
+    return res(true)
+  })
 }
 
 function reset_DB(guildid, client) {
@@ -2086,85 +2132,76 @@ function change_status(client) {
     });
   }
 }
-
+// Check if there is a setup-jointocreate vc with members in it to create temp channels
 async function check_voice_channels(client) {
-  let guilds = client.guilds.cache.map(guild => guild.id);
-  for (let i = 0; i < guilds.length; i++) {
-      try {
-          let guild = await client.guilds.cache.get(guilds[i]);
-          const obj = {}
-          for(let i = 1; i<=100; i++) {
-            obj[`jtcsettings${i}`] = {
-              channel: "",
-              channelname: "{user}' Room",
-              guild: guild.id,
-            }
-          }
-          dbEnsure(client.jtcsettings, guild.id, obj);
-          let jointocreate = []; //get the data from the database onto one variables
-          for(let i = 1; i<=100; i++) {
-            jointocreate.push(client.jtcsettings.get(guild.id, `jtcsettings${i}.channel`));
-          }
-          await guild.channels.cache.filter(ch => ch.type == "GUILD_VOICE" && jointocreate.includes(ch.id)).each(async (channel, j) => {
-              try{
-                  let members = channel.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966);
-                  if (members && members.length != 0){
-                      for (let k = 0; k < members.length; k++) {
-                          let themember = await guild.members.fetch(members[k]).catch(() => {});
-                          create_join_to_create_Channel(client, themember.voice, j + 1);
-                      }
-                  }else {
-                      //console.log("NO MEMBERS")
-                  }
-              }catch (e){
-                  console.error(e)
-              }
-
-          });
-      } catch (e) {
+  console.log("CHECK_VOICE_CHANNELS")
+  let rawData = await client.jtcsettings.all()
+  const guilds = [...client.guilds.cache.values()]
+  .filter(g => rawData.find(d => d.ID == g.id)?.data && typeof rawData.find(d => d.ID == g.id)?.data == "object")
+  .filter(g => Object.entries(rawData.find(d => d.ID == g.id)?.data).filter(([key, value]) => value && value.channel && value.channel.length > 6).length > 0);
+  if(!guilds || guilds.length == 0) return console.log(" CHECK SETUPPED :: NO GUILDS")
+  for(const guild of guilds) {
+    for(const [key, value] of Object.entries(rawData.find(d => d.ID == guild.id)?.data).filter(([key, value]) => value && value.channel && value.channel.length > 6)) {
+       
+      let channel = guild.channels.cache.find(ch => ch.type == "GUILD_VOICE" && value.channel == ch.id)
+      if(!channel) continue;
+      
+      try{
+        let members = channel.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966);
+        if (!members || members.length == 0) continue;
+        for(const member of members) {
+          let themember = await guild.members.fetch(member).catch(() => {});
+          if(!themember) continue;
+          create_join_to_create_Channel(client, themember.voice, key);
+        }
+      }catch (e){
           console.error(e)
+          continue;
       }
+    }
   }
   return;
 }
 
 async function check_created_voice_channels(client) {
-  let guilds = client.guilds.cache.map(guild => guild.id);
-  for (let i = 0; i < guilds.length; i++) {
-      try {
-          let guild = client.guilds.cache.get(guilds[i]);      
-          if(guild) {
-            guild.channels.cache.filter(ch => ch.type == "GUILD_VOICE").each(async vc => {
-              try{
-                  if(client.jointocreatemap.get(`tempvoicechannel_${vc.guild.id}_${vc.id}`) == vc.id){
-                      let members = vc.members.map(this_Code_is_by_Tomato_6966 => this_Code_is_by_Tomato_6966);
-                      if(!members || members == undefined || members.length == undefined || members.length == 0){
-                          client.jointocreatemap.delete(`tempvoicechannel_${vc.guild.id}_${vc.id}`);
-                          client.jointocreatemap.delete(`owner_${vc.guild.id}_${vc.id}`);
-                          //move user
-                          if(vc.permissionsFor(vc.guild.me).has(Permissions.FLAGS.MANAGE_CHANNELS)){
-                            vc.delete().catch(e => console.error(e) )
-                            console.log(`Deleted the Channel: ${vc.name} in: ${vc.guild ? vc.guild.name : "undefined"} DUE TO EMPTYNESS`.strikethrough.brightRed)
-                          } else {
-                            console.log(`I couldn't delete the Channel: ${vc.name} in: ${vc.guild ? vc.guild.name : "undefined"} DUE TO EMPTYNESS`.strikethrough.brightRed)
-                         }                          
-                      }
-                  }
-              }catch (e){
-                 // console.log("Not in db")
-              }
-            });
-          }
-      } catch (e) {
-          console.error(e)
+  console.log("CHECK_CREATED_VOICE_CHANNELS")
+  let map = await client.jointocreatemap.all();
+  for(const guild of [...client.guilds.cache.values()].filter(g => g.channels && g.channels.cache.size > 0)) {
+    try {
+      const vcs = guild.channels.cache.filter(ch => ch.type == "GUILD_VOICE")
+        .filter(vc => vc.members.size <= 0)
+        .filter(ch => ch.id == map.find(d => d.ID == `tempvoicechannel_${ch.guild.id}_${ch.id}`)?.data).map(d => d)
+      if(!vcs || vcs.length == 0) continue;
+      for(const vc of vcs) {
+        try{
+          console.log(`CHECK CREATED :: CHECKMEMBERS ${vc.name}`)
+          await client.jointocreatemap.delete(`tempvoicechannel_${vc.guild.id}_${vc.id}`);
+          await client.jointocreatemap.delete(`owner_${vc.guild.id}_${vc.id}`);
+          //move user
+          if(vc.permissionsFor(vc.guild.me).has(Permissions.FLAGS.MANAGE_CHANNELS)){
+            vc.delete().catch(e => console.error(e) )
+            console.log(`Deleted the Channel: ${vc.name} in: ${vc.guild ? vc.guild.name : "undefined"} DUE TO EMPTYNESS`.strikethrough.brightRed)
+            continue;
+          } else {
+            console.log(`I couldn't delete the Channel: ${vc.name} in: ${vc.guild ? vc.guild.name : "undefined"} DUE TO EMPTYNESS`.strikethrough.brightRed)
+            continue;
+          }    
+        }catch (e){
+          // console.log("Not in db")
+          continue;
+        }
       }
+    } catch (e) {
+      continue;
+        console.error(e)
+    }
   }
   return;
 }
 
-function create_join_to_create_Channel(client, voiceState, type) {
-  let ls = client.settings.get(voiceState.member.guild.id, "language")
-  let chname =  client.jtcsettings.get(voiceState.member.guild.id, `jtcsettings${type}.channelname`) || "{user}'s Room";
+async function create_join_to_create_Channel(client, voiceState, prekey) {
+  let ls = await client.settings.get(voiceState.member.guild.id+".language") || "en"
+  let chname = await client.jtcsettings.get(voiceState.member.guild.id+`${prekey}.channelname`) || "{user}'s Room";
   
   //CREATE THE CHANNEL
   if (!voiceState.guild.me.permissions.has("MANAGE_CHANNELS")) {
@@ -2218,8 +2255,8 @@ function create_join_to_create_Channel(client, voiceState, type) {
     voiceState.guild.channels.create(String(chname.replace("{user}", voiceState.member.user.username)).substring(0, 32), createOptions).then(async vc => {
       console.log(`Created the Channel: ${String(chname.replace("{user}", voiceState.member.user.username)).substring(0, 32)} in: ${voiceState.guild ? voiceState.guild.name : "undefined"} after: ${Date.now() - DateNow}ms`.brightGreen)
       //add to the DB
-      client.jointocreatemap.set(`owner_${vc.guild.id}_${vc.id}`, voiceState.id);
-      client.jointocreatemap.set(`tempvoicechannel_${vc.guild.id}_${vc.id}`, vc.id);
+      await client.jointocreatemap.set(`owner_${vc.guild.id}_${vc.id}`, voiceState.id);
+      await client.jointocreatemap.set(`tempvoicechannel_${vc.guild.id}_${vc.id}`, vc.id);
       //move user
       if(vc.permissionsFor(vc.guild.me).has(Permissions.FLAGS.MOVE_MEMBERS) && voiceState.channel.permissionsFor(voiceState.guild.me).has(Permissions.FLAGS.MOVE_MEMBERS)){
         await voiceState.setChannel(vc);
@@ -2269,32 +2306,89 @@ async function create_transcript(message, client, msglimit) {
 }
 /**
  * @INFO
- * Bot Coded by Tomato#6966 | https://discord.gg/milrato
+ * Bot Coded by Tomato#6966 | https://discord.gg/dcdev
  * @INFO
  * Work for Milrato Development | https://milrato.eu
  * @INFO
  * Please mention him / Milrato Development, when using this Code!
  * @INFO
  */
-
- function dbEnsure(db, key, data) {
-  if(!db?.has(key)) {
-     db?.ensure(key, data);
-  } else {
-    for(const [Okey, value] of Object.entries(data)) {
-      if(!db?.has(key, Okey)) {
-        db?.ensure(key, value, Okey);
-      } else {
+const updateCache = async (db) => {
+  return new Promise(async (resolve, reject) => {
+      const rawData = await db.all().catch(console.error);
+      if(rawData) {
+          const ALLDB = new Collection();
+          if(rawData && Object.keys(rawData).length > 0 ) {
+              for(const d of rawData) {
+                let DB_key = d.ID;
+                if(!DB_key) continue;
+                let DB_Data = rawData.find(x => x.ID == DB_key)?.data;
+                if(!DB_Data) continue;
+                // if it's a object, change it to a collection (MAP) so you can use db.get()
+                if(typeof DB_Data == "object") {
+                  const DB = new Collection();
+                  for(const [key, value] of Object.entries(DB_Data)) DB.set(key, value); // add the collection entries
+                  DB_Data = DB; // change it to the collection;
+                }
+                ALLDB.set(DB_key, DB_Data) // set it in the COLLECTION, so you can do quickMongoDb.cache.get(guildId)
+              }
+          }
+          module.exports.cache = ALLDB;
+          resolve(ALLDB);
+          return 
       }
+  })
+}
+//usage: await dbEnsure(QuickMongoDatabase, "key", { foo: "bar", data: ...Data });
+async function dbEnsure(db, key, data) {
+  return new Promise(async (res) => {
+    if(db) {
+      const dd = await db.get(key);
+      if(!dd) {
+        await db.set(key, data);
+        await delay(5); // minimum 1 ms so we use 5
+        res(true);
+      } else {
+        if(typeof dd == "object") {
+          let changed = false;
+          for(const [Okey, value] of Object.entries(data)) {
+            const Ddd = dd[Okey]
+            if(!Ddd) {
+              dd[Okey] = value;
+              changed = true;
+            } else {
+            }
+          }
+          if(changed) {
+            await db.set(key, dd);
+            await delay(5); // minimum 1 ms so we use 5
+          }
+          res(true);
+        } else {
+          console.log("Not an OBJECT".bgRed)
+          res(false);
+        }
+      }
+    } else {
+      res(true);
     }
+  })
+}
+//usage: with callback function: 
+//const keys = await dbKeys(QuickMongoDB, d => d.data == "a" || d.guildId == message.guild.id);
+async function dbKeys(db, filter = null) {
+  const Data = await db.all();
+  if(filter && _.isFunction(filter)) {        
+    return Data.filter(filter).map(d => d.ID);
+  } else {
+    return Data.map(d => d.ID);   
   }
 }
-
-function simple_databasing(client, guildid, userid) {
+async function simple_databasing(client, guildid, userid) {
   if(!client || client == undefined || !client.user || client.user == undefined) return;
   try {
     if(guildid && userid){
-      dbEnsure(client.stats, guildid+userid, {
+      await dbEnsure(client.stats, guildid+userid, {
         ban: [],
         kick: [],
         mute: [],
@@ -2302,18 +2396,17 @@ function simple_databasing(client, guildid, userid) {
         says: [],
         warn: [],
       })
+      
     }
     if(userid){
-      dbEnsure(client.settings, userid, {
-        dm: true,
-      })
+      await dbEnsure(client.settings, userid, { dm: true,})
     }
     if (guildid) { 
       
-      dbEnsure(client.musicsettings, guildid, {"channel": "","message": ""});
-      dbEnsure(client.customcommands, guildid, {commands: []});
-      dbEnsure(client.stats, guildid, {commands: 0,songs: 0});
-      dbEnsure(client.settings, guildid, {
+      await dbEnsure(client.musicsettings, guildid, {"channel": "","message": ""});
+      await dbEnsure(client.stats, guildid, {commands: 0,songs: 0});
+      
+      await dbEnsure(client.settings, guildid, {
         prefix: config.prefix,
         pruning: true,
         requestonly: true,
@@ -2444,6 +2537,7 @@ function simple_databasing(client, guildid, userid) {
         djonlycmds: ["autoplay", "clearqueue", "forward", "loop", "jump", "loopqueue", "loopsong", "move", "pause", "resume", "removetrack", "removedupe", "restart", "rewind", "seek", "shuffle", "skip", "stop", "volume"],
         botchannel: [],
       });
+      await dbEnsure(client.customcommands, guildid, {commands: []});
     }
     return;
   } catch (e) {
@@ -2452,8 +2546,8 @@ function simple_databasing(client, guildid, userid) {
 }
 
 
-function ensure_economy_user(client, guildid, userid){
-    dbEnsure(client.economy, `${guildid}-${userid}`, {
+async function ensure_economy_user(client, guildid, userid){
+    await dbEnsure(client.economy, `${guildid}_${userid}`, {
       user: userid,
       work: 0,
       balance: 0,
@@ -2479,13 +2573,13 @@ function ensure_economy_user(client, guildid, userid){
         }
       }
     })
-    let data = client.economy.get(`${guildid}-${userid}`)
+    let data = await client.economy.get(`${guildid}_${userid}`)
     //reset the blackmarket Booster if it's over!
     if(data.black_market.boost.time !== 0 && (86400000 * 2) - (Date.now() - data.black_market.boost.time) <= 0)
     {
       console.log(`Reset Multiplier from Black Market for: ${userid} | TIME: ${(86400000 * 2) - (Date.now() - data.black_market.boost.time)}`)
-      client.economy.set(`${guildid}-${userid}`, 1, "black_market.boost.multiplier");
-      client.economy.set(`${guildid}-${userid}`, 0, "black_market.boost.time");
+      await client.economy.set(`${guildid}_${userid}`, 1, "black_market.boost.multiplier");
+      await client.economy.set(`${guildid}_${userid}`, 0, "black_market.boost.time");
     }  
       
 }
@@ -2510,6 +2604,8 @@ function ensure_economy_user(client, guildid, userid){
 
 
 const Parser = require("rss-parser");
+const { del } = require("request-promise-native");
+const { ALL } = require("dns");
 const parser = new Parser();
 //UGLY STUFF:
 async function getLatestVideos(ChannelLink) {
@@ -2633,7 +2729,7 @@ const channelInfo = (url, options = {}) => __awaiter(void 0, void 0, void 0, fun
     }
     /**
      * @INFO
-     * Bot Coded by Tomato#6966 | https://discord.gg/milrato
+     * Bot Coded by Tomato#6966 | https://discord.gg/dcdev
      * @INFO
      * Work for Milrato Development | https://milrato.eu
      * @INFO
@@ -2702,3 +2798,28 @@ const channelInfo = (url, options = {}) => __awaiter(void 0, void 0, void 0, fun
     return channel;
 });
 module.exports.channelInfo = channelInfo;
+
+async function CheckGuild(client, key) {
+  return new Promise(async (res) => {
+    try {
+      let database = await client.database.get(key);
+      if(!database) {
+        client.checking[key] = true;
+        console.log("First-Time-Setting: ", key)
+        // ensure 
+        client.database.set(key, true);
+        await databasing(client, key);
+        console.log("First-Time-Setting: DONE ", key)
+        client.checking[key] = false
+        res(true);
+      } else {
+        client.checking[key] = false; // set it to false, just to be sure
+        res(true);
+      }
+    }catch (e){
+      console.error(e);
+      client.checking[key] = false; // set it to false, just to be sure
+      res(false);
+    }
+  })
+}
