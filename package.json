@@ -35,6 +35,7 @@
     "erela.js-deezer": "^1.0.7",
     "erela.js-facebook": "^1.0.4",
     "erela.js-spotify": "^1.2.0",
+    "enmap": "^5.8.7",
     "ffmpeg-static": "^4.4.1",
     "goosecache": "^9.0.14",
     "got": "^11.8.3",
