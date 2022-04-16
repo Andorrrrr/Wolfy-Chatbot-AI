@@ -56,7 +56,6 @@ module.exports = {
   isEqual,
   check_if_dj,
   dbEnsure,
-  clearDBData,
   getDisabledComponents
 };
 //usage: await dbRemove(QuickMongoDB, "key", "a"); 
