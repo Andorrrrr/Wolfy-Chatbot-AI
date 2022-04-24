@@ -5,8 +5,9 @@
         "809848800306135066"
     ],
     "status": {
-        "text": "{prefix}help | Chilling in Andor's basement",
-        "text2": "Competing in a $19 fortnite card giveaway",
+        "text": "{prefix}help | In {guildcount} servers, with {membercount} members",
+        "text2": "{prefix}help | Competing in a $19 fortnite card giveaway",
+        "text3": "{prefix}help | Chilling in Andor's basement",
         "type": "PLAYING",
         "url": "https://www.youtube.com/channel/UCHeSSFqSvY7-9pRQnFZv7Bg"
     }}
