@@ -15,23 +15,9 @@ module.exports = {
 		{"StringChoices": { name: "category", description: "See the Commands of a Category", 
     required: true, 
     choices: [
-      ["⌨️ Programming", "⌨️ Programming"], 
-      ["⚙️ Settings", "⚙️ Settings"], 
-      ["⚜️ Custom Queue(s) ", "⚜️ Custom Queue(s)"], 
-      ["🎤 Voice", "🎤 Voice"], 
-      ["🎮 MiniGames", "🎮 MiniGames"], 
-      ["🎶 Music", "🎶 Music"], 
-      ["🏫 School Commands", "🏫 School Commands"], 
-      ["👀 Filter", "👀 Filter"], 
-      ["👑 Owner", "👑 Owner"], 
       ["💪 Setup", "💪 Setup"], 
-      ["💸 Economy", "💸 Economy"], 
-      ["📈 Ranking", "📈 Ranking"], 
-      ["🔊 Soundboard", "🔊 Soundboard"], 
-      ["🔞 NSFW", "🔞 NSFW"], 
       ["🔰 Info", "🔰 Info"], 
       ["🕹️ Fun", "🕹️ Fun"], 
-      ["🚫 Administration", "🚫 Administration"], 
     ] 
   }
     },

@@ -1,7 +1,7 @@
 {
   "name": "wolfy-chatbot",
   "version": "1.0.0",
-  "description": "",
+  "description": "AI chatbot created by Wolfy Debelopment",
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
@@ -26,6 +26,11 @@
     "common-tags": "^1.8.2",
     "cpu-stat": "^2.0.1",
     "cron": "^1.8.2",
+<<<<<<< HEAD
+=======
+    "mongoose": "^5.11.14",
+    "mongodb": "^4.3.1",
+>>>>>>> 08446c3938003b78fe3883fe356c68ca33eef0cf
     "discord-backup": "^3.0.1",
     "discord-canvas": "^1.4.1",
     "discord-giveaways": "^5.1.0",

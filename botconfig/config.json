@@ -1,12 +1,17 @@
 {
-    "token": "OTY3MTQ4Mjg2MjUzMzUxMDAz.YmMFCA.opxtrwMrwb7ZvvO3EGlnnBh9lnQ",
+<<<<<<< HEAD
+    "token": "",
+=======
+    "token": "OTYyMDYwNzg3MzczOTk0MDU0.YlCC7Q.95cxdXI-SvgWRumM9t9ogUqnx3w",
+>>>>>>> 08446c3938003b78fe3883fe356c68ca33eef0cf
     "prefix": "w!",
     "ownerIDS": [
         "809848800306135066"
     ],
     "status": {
-        "text": "{prefix}help | Chilling in Andor's basement",
-        "text2": "Competing in a $19 fortnite card giveaway",
+        "text": "{prefix}help | In {guildcount} servers, with {membercount} members",
+        "text2": "{prefix}help | Competing in a $19 fortnite card giveaway",
+        "text3": "{prefix}help | Chilling in Andor's basement",
         "type": "PLAYING",
         "url": "https://www.youtube.com/channel/UCHeSSFqSvY7-9pRQnFZv7Bg"
     }}

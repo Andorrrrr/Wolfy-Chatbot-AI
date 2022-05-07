@@ -2,11 +2,7 @@ var {
     Manager
   } = require("erela.js"),
   
-    Spotify = require("erela.js-spotify"),
-    Deezer = require("erela.js-deezer"),
-    Facebook = require("erela.js-facebook"),
     config = require(`${process.cwd()}/botconfig/config.json`),
-    clientID = process.env.clientID || config.spotify.clientID,
     clientSecret = process.env.clientSecret || config.spotify.clientSecret;
   module.exports = (client) => {
       if (!clientID || !clientSecret || clientID.length < 5 || clientSecret.length < 5) {
