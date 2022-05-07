@@ -1,4 +1,3 @@
-const mongoose = require('./database/mongoose')
 const config = require("./botconfig/config.json")
 const emojis = require("./botconfig/emojis.json")
 const Events = require("events");
@@ -59,5 +58,4 @@ function requirehandlers() {
 	  });
   } requirehandlers();
 
-mongoose.init();
 client.login(process.env.TOKEN);

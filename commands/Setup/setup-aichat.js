@@ -6,8 +6,8 @@ var {
   var ee = require(`${process.cwd()}/botconfig/embed.json`);
   var emoji = require(`${process.cwd()}/botconfig/emojis.json`);
   var {
-    dbEnsure
-  } = require(`../../handlers/functions`);
+    databasing
+  } = require(`${process.cwd()}/handlers/functions`);
   
   const { MessageButton, MessageActionRow, MessageSelectMenu } = require('discord.js')
   module.exports = {
